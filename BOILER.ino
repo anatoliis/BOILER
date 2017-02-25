@@ -1,7 +1,9 @@
 #include "TM1637.h"
 #include <EEPROM.h>
 #include <OneWire.h>
+
 #define DEFAULT_TRIGGER_TEMPERATURE 22.5
+#define INVALID_TEMPERATURE -273.
 #define CLK_PIN 6
 #define DIO_PIN 7
 #define RELAY_PIN 4
@@ -12,17 +14,38 @@
 #define BUTTON_PIN 10
 
 TM1637 display(CLK_PIN, DIO_PIN);
-OneWire  ds(SENSOR_PIN);
+OneWire oneWire(SENSOR_PIN);
+
+void setup() {
+  Serial.begin(9600);
+
+  display.clearDisplay();
+  display.setBrightness(3);
+  display.showPoints(true);
+
+  pinMode(LED_POWER_PIN, OUTPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(LED_OPENED_PIN, OUTPUT);
+  pinMode(LED_CLOSED_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT);
+
+  digitalWrite(BUTTON_PIN, HIGH);
+  digitalWrite(LED_POWER_PIN, HIGH);
+
+  gateOpen();
+}
 
 float readTempFromEEPROM() {
   int integralPart = EEPROM.read(0);
   int fraction = EEPROM.read(1);
   float temperature = (float)integralPart + (float)fraction / 100.;
-  Serial.print(" ==== EEPROM => ");
-  Serial.println(temperature);
   if (temperatureIsValid(temperature)) {
+    Serial.print("*** Temperature read from EEPROM: ");
+    Serial.println(temperature);
     return temperature;
   }
+  Serial.print("*** Couldn't read temperature from EEPROP, using default: ");
+  Serial.println(DEFAULT_TRIGGER_TEMPERATURE);
   return DEFAULT_TRIGGER_TEMPERATURE;
 }
 
@@ -30,58 +53,27 @@ void saveTempToEEPROM(float temperature) {
   int tempValue = (int)(temperature * 100.);
   int fraction = tempValue % 100;
   int integralPart = (tempValue - fraction) / 100;
-  Serial.print("EEPROM SAVE: ");
-  Serial.println(integralPart);
-  Serial.print("EEPROM SAVE: ");
-  Serial.println(fraction);
   EEPROM.update(0, integralPart);
   EEPROM.update(1, fraction);
+  Serial.print("*** Temperature saved to EEPROM: ");
+  Serial.println(temperature);
 }
 
 float triggerTemperature = readTempFromEEPROM();
+byte currentSensorAddress[8];
 bool opened = true;
+bool lastShowedTriggerTemp = false;
 float temperature;
 
-void setup() {
-  display.clearDisplay();
-  display.setBrightness(3);
-  display.showPoints(true);
-  pinMode(LED_POWER_PIN, OUTPUT);
-  pinMode(RELAY_PIN, OUTPUT);
-  pinMode(LED_OPENED_PIN, OUTPUT);
-  pinMode(LED_CLOSED_PIN, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT);
-  digitalWrite(BUTTON_PIN, HIGH);
-
-  digitalWrite(LED_POWER_PIN, HIGH);
-  gateOpen();
-  Serial.begin(9600);
-}
-
-void gateOpen() {
-  digitalWrite(RELAY_PIN, LOW);
-  digitalWrite(LED_OPENED_PIN, HIGH);
-  digitalWrite(LED_CLOSED_PIN, LOW);
-  Serial.println("Gate OPEN");
-}
-
-void gateClose() {
-  digitalWrite(RELAY_PIN, HIGH);
-  digitalWrite(LED_OPENED_PIN, LOW);
-  digitalWrite(LED_CLOSED_PIN, HIGH);
-  Serial.println("Gate CLOSE");
-}
-
 float getTemperatureFromSensors() {
-  int sensorsNumber = 2;
   float minTemperature = 10000;
   bool gotAtLeastOneValidResult = false;
 
-  ds.reset_search();
-  for (int i = 0; i < sensorsNumber; i++) {
+  int sensorIndex = 0;
+  while (oneWire.search(currentSensorAddress)) {
     float temp = getTemperatureFromNextSensor();
     Serial.print("Sensor ");
-    Serial.print(i);
+    Serial.print(sensorIndex);
     Serial.print(": ");
     if (temperatureIsValid(temp)) {
       minTemperature = min(minTemperature, temp);
@@ -90,40 +82,39 @@ float getTemperatureFromSensors() {
     } else {
       Serial.println("Invalid");
     }
+    sensorIndex++;
   }
+  oneWire.reset_search();
+  
   if (gotAtLeastOneValidResult) return minTemperature;
-  return -273.;
+  return INVALID_TEMPERATURE;
 }
 
 bool temperatureIsValid(float temp) {
-  return temp >= -30. && temp <= 150.;
+  return temp >= -30. && temp <= 125.;
 }
 
 float getTemperatureFromNextSensor() {
   byte i;
   byte data[12];
-  byte addr[8];
-  float celsius;
 
-  ds.search(addr);
-
-  if (OneWire::crc8(addr, 7) != addr[7]) {
+  if (OneWire::crc8(currentSensorAddress, 7) != currentSensorAddress[7]) {
     Serial.println("CRC is not valid!");
-    return -273.;
+    return INVALID_TEMPERATURE;
   }
 
-  ds.reset();
-  ds.select(addr);
-  ds.write(0x44, 1);
+  oneWire.reset();
+  oneWire.select(currentSensorAddress);
+  oneWire.write(0x44, 1);
 
-  customDelay(1000);
+  operationalLoop(850);
 
-  ds.reset();
-  ds.select(addr);
-  ds.write(0xBE);
+  oneWire.reset();
+  oneWire.select(currentSensorAddress);
+  oneWire.write(0xBE);
 
   for ( i = 0; i < 9; i++) {
-    data[i] = ds.read();
+    data[i] = oneWire.read();
   }
 
   int16_t raw = (data[1] << 8) | data[0];
@@ -131,11 +122,11 @@ float getTemperatureFromNextSensor() {
   if (cfg == 0x00) raw = raw & ~7;
   else if (cfg == 0x20) raw = raw & ~3;
   else if (cfg == 0x40) raw = raw & ~1;
-  celsius = (float)raw / 16.0;
-  return celsius;
+  
+  return (float)raw / 16.0;
 }
 
-void customDelay(int delayMs) {
+void operationalLoop(int delayMs) {
   unsigned long start = millis();
   unsigned long finish = start + delayMs;
   while (millis() < finish) {
@@ -154,13 +145,13 @@ void checkSerialCommands() {
       if (temperatureIsValid(newTemperature) && newTemperature != 0.) {
         triggerTemperature = newTemperature;
         saveTempToEEPROM(triggerTemperature);
-        Serial.print("=> Trigger temperature set to: ");
+        Serial.print("CMD => Trigger temperature set to: ");
         Serial.println(triggerTemperature);
       } else {
-        Serial.println("=> Invalid temperature");
+        Serial.println("CMD => Invalid temperature");
       }
     } else {
-      Serial.println("=> Invalid command");
+      Serial.println("CMD => Invalid command");
     }
   }
 }
@@ -189,7 +180,19 @@ void loop() {
   Serial.println("==========");
 }
 
-bool lastShowedTriggerTemp = false;
+void gateOpen() {
+  digitalWrite(RELAY_PIN, LOW);
+  digitalWrite(LED_OPENED_PIN, HIGH);
+  digitalWrite(LED_CLOSED_PIN, LOW);
+  Serial.println("Gate OPEN");
+}
+
+void gateClose() {
+  digitalWrite(RELAY_PIN, HIGH);
+  digitalWrite(LED_OPENED_PIN, LOW);
+  digitalWrite(LED_CLOSED_PIN, HIGH);
+  Serial.println("Gate CLOSE");
+}
 
 void showCurrentOrTriggerTemp(float temperature) {
   float numberToDisplay;
@@ -230,5 +233,4 @@ void errorState() {
     }
   }
 }
-
 
