@@ -25,8 +25,6 @@ bool opened = true;
 bool lastShowedTriggerTemp = false;
 float temperature;
 
-byte sensorsAddresses[2][8];
-
 void setup() {
   Serial.begin(9600);
 
@@ -217,12 +215,12 @@ void loop() {
   Serial.println(triggerTemperature);
 
   if (opened) {
-    if (temperature < triggerTemperature - 0.05) {
+    if (temperature < triggerTemperature - 0.1) {
       gateClose();
       opened = false;
     }
   } else {
-    if (temperature > triggerTemperature + 0.05) {
+    if (temperature > triggerTemperature + 0.1) {
       gateOpen();
       opened = true;
     }
