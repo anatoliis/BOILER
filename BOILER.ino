@@ -176,8 +176,7 @@ float readTemperatureFromSensor(byte sensorAddress[], byte index) {
 
 void operationalLoop(int delayMs) {
   unsigned long start = millis();
-  unsigned long finish = start + delayMs;
-  while (millis() < finish) {
+  while ((unsigned long)(millis() - start) < delayMs) {
     showCurrentOrTriggerTemp(temperature);
     checkSerialCommands();
     delay(100);
