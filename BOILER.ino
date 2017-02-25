@@ -2,6 +2,7 @@
 #include <EEPROM.h>
 #include <OneWire.h>
 
+#define MEASUREMENT_DELAY 1000
 #define DEFAULT_TRIGGER_TEMPERATURE 15.5
 #define INVALID_TEMPERATURE -273.
 #define CLK_PIN 6
@@ -45,7 +46,24 @@ void setup() {
   triggerTemperature = readTempFromEEPROM();
   findSensorsAddresses();
 
+  //  changeResolution(firstSensorAddress);
+  //  changeResolution(secondSensorAddress);
+
   gateOpen();
+}
+
+void changeResolution(byte address[]) {
+  oneWire.reset();
+  oneWire.select(address);
+  oneWire.write(0x4E);
+  oneWire.write(0x00);
+  oneWire.write(0x00);
+  oneWire.write(0x5f); // 0x1f - 9 bit, 0x3f - 10 bit, 0x5f - 11 bit, 0x7f - 12 bit
+  oneWire.reset();
+
+  oneWire.select(address);
+  oneWire.write(0x48);
+  delay(15);
 }
 
 void findSensorsAddresses() {
@@ -109,7 +127,7 @@ float getTemperature() {
   startSensorTemperatureConversion(firstSensorAddress);
   startSensorTemperatureConversion(secondSensorAddress);
 
-  operationalLoop(1000);
+  operationalLoop(MEASUREMENT_DELAY);
 
   float firstTemperature = readTemperatureFromSensor(firstSensorAddress, 1);
   float secondTemperature = readTemperatureFromSensor(secondSensorAddress, 2);
@@ -158,7 +176,7 @@ void operationalLoop(int delayMs) {
   while (millis() < finish) {
     showCurrentOrTriggerTemp(temperature);
     checkSerialCommands();
-    delay(50);
+    delay(100);
   }
 }
 
