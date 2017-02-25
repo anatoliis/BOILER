@@ -206,6 +206,7 @@ void checkSerialCommands() {
 void loop() {
   temperature = getTemperature();
   if (!temperatureIsValid(temperature)) {
+    gateOpen();
     errorState();
   }
   Serial.print("Temperature: ");
