@@ -2,7 +2,7 @@
 #include <EEPROM.h>
 #include <OneWire.h>
 
-#define DEFAULT_TRIGGER_TEMPERATURE 22.5
+#define DEFAULT_TRIGGER_TEMPERATURE 15.5
 #define INVALID_TEMPERATURE -273.
 #define CLK_PIN 6
 #define DIO_PIN 7
@@ -15,6 +15,16 @@
 
 TM1637 display(CLK_PIN, DIO_PIN);
 OneWire oneWire(SENSOR_PIN);
+
+float triggerTemperature;
+byte firstSensorAddress[8];
+byte secondSensorAddress[8];
+
+bool opened = true;
+bool lastShowedTriggerTemp = false;
+float temperature;
+
+byte sensorsAddresses[2][8];
 
 void setup() {
   Serial.begin(9600);
@@ -32,7 +42,39 @@ void setup() {
   digitalWrite(BUTTON_PIN, HIGH);
   digitalWrite(LED_POWER_PIN, HIGH);
 
+  triggerTemperature = readTempFromEEPROM();
+  findSensorsAddresses();
+
   gateOpen();
+}
+
+void findSensorsAddresses() {
+  oneWire.search(firstSensorAddress);
+  printSensorAddress(firstSensorAddress, 1);
+  bool valid = validateSensorAddressCRC(firstSensorAddress, 1);
+  oneWire.search(secondSensorAddress);
+  printSensorAddress(secondSensorAddress, 2);
+  valid = valid && validateSensorAddressCRC(secondSensorAddress, 2);
+}
+
+void printSensorAddress(byte sensorAddress[], byte index) {
+  Serial.print("Found sensor ");
+  Serial.print(index);
+  Serial.print(": ");
+  for (int i = 0; i < 8; i++) {
+    Serial.print(sensorAddress[i], HEX);
+  }
+  Serial.println();
+}
+
+bool validateSensorAddressCRC(byte sensorAddress[], byte index) {
+  if (OneWire::crc8(sensorAddress, 7) != sensorAddress[7]) {
+    Serial.print("CRC of Sensor ");
+    Serial.print(index);
+    Serial.println(" is not valid!");
+    return false;
+  }
+  return true;
 }
 
 float readTempFromEEPROM() {
@@ -59,71 +101,55 @@ void saveTempToEEPROM(float temperature) {
   Serial.println(temperature);
 }
 
-float triggerTemperature = readTempFromEEPROM();
-byte currentSensorAddress[8];
-bool opened = true;
-bool lastShowedTriggerTemp = false;
-float temperature;
-
-float getTemperatureFromSensors() {
-  float minTemperature = 10000;
-  bool gotAtLeastOneValidResult = false;
-
-  int sensorIndex = 0;
-  while (oneWire.search(currentSensorAddress)) {
-    float temp = getTemperatureFromNextSensor();
-    Serial.print("Sensor ");
-    Serial.print(sensorIndex);
-    Serial.print(": ");
-    if (temperatureIsValid(temp)) {
-      minTemperature = min(minTemperature, temp);
-      Serial.println(temp);
-      gotAtLeastOneValidResult = true;
-    } else {
-      Serial.println("Invalid");
-    }
-    sensorIndex++;
-  }
-  oneWire.reset_search();
-  
-  if (gotAtLeastOneValidResult) return minTemperature;
-  return INVALID_TEMPERATURE;
-}
-
 bool temperatureIsValid(float temp) {
   return temp >= -30. && temp <= 125.;
 }
 
-float getTemperatureFromNextSensor() {
-  byte i;
-  byte data[12];
+float getTemperature() {
+  startSensorTemperatureConversion(firstSensorAddress);
+  startSensorTemperatureConversion(secondSensorAddress);
 
-  if (OneWire::crc8(currentSensorAddress, 7) != currentSensorAddress[7]) {
-    Serial.println("CRC is not valid!");
-    return INVALID_TEMPERATURE;
-  }
+  operationalLoop(1000);
 
+  float firstTemperature = readTemperatureFromSensor(firstSensorAddress, 1);
+  float secondTemperature = readTemperatureFromSensor(secondSensorAddress, 2);
+
+  bool valid = temperatureIsValid(firstTemperature) && temperatureIsValid(secondTemperature);
+  if (!valid) return INVALID_TEMPERATURE;
+
+  return min(firstTemperature, secondTemperature);
+}
+
+void startSensorTemperatureConversion(byte sensorAddress[]) {
   oneWire.reset();
-  oneWire.select(currentSensorAddress);
+  oneWire.select(sensorAddress);
   oneWire.write(0x44, 1);
+}
 
-  operationalLoop(850);
+float readTemperatureFromSensor(byte sensorAddress[], byte index) {
+  byte sensorData[12];
 
   oneWire.reset();
-  oneWire.select(currentSensorAddress);
+  oneWire.select(sensorAddress);
   oneWire.write(0xBE);
-
-  for ( i = 0; i < 9; i++) {
-    data[i] = oneWire.read();
+  for (byte i = 0; i < 9; i++) {
+    sensorData[i] = oneWire.read();
   }
 
-  int16_t raw = (data[1] << 8) | data[0];
-  byte cfg = (data[4] & 0x60);
+  int16_t raw = (sensorData[1] << 8) | sensorData[0];
+  byte cfg = (sensorData[4] & 0x60);
   if (cfg == 0x00) raw = raw & ~7;
   else if (cfg == 0x20) raw = raw & ~3;
   else if (cfg == 0x40) raw = raw & ~1;
-  
-  return (float)raw / 16.0;
+
+  float temp = (float)raw / 16.0;
+
+  Serial.print("Sensor ");
+  Serial.print(index);
+  Serial.print(": ");
+  Serial.println(temp);
+
+  return temp;
 }
 
 void operationalLoop(int delayMs) {
@@ -157,7 +183,7 @@ void checkSerialCommands() {
 }
 
 void loop() {
-  temperature = getTemperatureFromSensors();
+  temperature = getTemperature();
   if (!temperatureIsValid(temperature)) {
     errorState();
   }
@@ -177,7 +203,7 @@ void loop() {
       opened = true;
     }
   }
-  Serial.println("==========");
+  Serial.println("=====");
 }
 
 void gateOpen() {
