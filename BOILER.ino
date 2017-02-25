@@ -120,7 +120,7 @@ void saveTempToEEPROM(float temperature) {
 }
 
 bool temperatureIsValid(float temp) {
-  return temp >= -30. && temp <= 125.;
+  return temp >= 0. && temp <= 125.;
 }
 
 float getTemperature() {
@@ -132,9 +132,15 @@ float getTemperature() {
   float firstTemperature = readTemperatureFromSensor(firstSensorAddress, 1);
   float secondTemperature = readTemperatureFromSensor(secondSensorAddress, 2);
 
-  bool valid = temperatureIsValid(firstTemperature) && temperatureIsValid(secondTemperature);
-  if (!valid) return INVALID_TEMPERATURE;
-
+  bool firstTempIsValid = temperatureIsValid(firstTemperature);
+  bool secondTempIsValid = temperatureIsValid(secondTemperature);
+  if (!firstTempIsValid && !secondTempIsValid) {
+    return INVALID_TEMPERATURE;
+  } else if (!firstTempIsValid) {
+    return secondTemperature;
+  } else if (!secondTempIsValid) {
+    return firstTemperature;
+  }
   return min(firstTemperature, secondTemperature);
 }
 
